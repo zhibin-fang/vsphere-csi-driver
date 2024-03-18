@@ -81,7 +81,3 @@ type CnsMigrateVolumeList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []CnsMigrateVolume `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&CnsMigrateVolume{}, &CnsMigrateVolumeList{})
-}
