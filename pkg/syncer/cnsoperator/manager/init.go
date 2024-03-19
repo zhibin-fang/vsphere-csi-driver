@@ -140,6 +140,16 @@ func InitCnsOperator(ctx context.Context, clusterFlavor cnstypes.CnsClusterFlavo
 			return err
 		}
 
+                // Create CnsMigrateVolume CRD
+                err = k8s.CreateCustomResourceDefinitionFromManifest(ctx, cnsoperatorconfig.EmbedCnsMigrateVolumeCRFile,
+                        cnsoperatorconfig.EmbedCnsMigrateVolumeCRFileName)
+                if err != nil {
+                        crdKindMigrateVolume := cnsoperatorv1alpha1.CnsMigrateVolumePlural +
+                                "." + cnsoperatorv1alpha1.SchemeGroupVersion.Group
+                        log.Errorf("failed to create %q CRD. Err: %+v", crdKindMigrateVolume, err)
+                        return err
+                }
+
 		var stretchedSupervisor bool
 		if commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.TKGsHA) {
 			clusterComputeResourceMoIds, err := common.GetClusterComputeResourceMoIds(ctx)
