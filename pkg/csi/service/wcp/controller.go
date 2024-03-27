@@ -1019,7 +1019,7 @@ func (c *controller) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequ
 			}
 		}
 		//TODO: Retrieve the labels for deregister, set DeleteVolumeUtil(...,false) for deregister.
-        log.Infof("deregister volume: %s, the underlying FCD will not be deleted", req.VolumeId)
+		log.Infof("deregister volume: %s, the underlying FCD will not be deleted", req.VolumeId)
 
 		faultType, err := common.DeleteVolumeUtil(ctx, c.manager.VolumeManager, req.VolumeId, true)
 		if err != nil {

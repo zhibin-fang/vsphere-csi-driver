@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-    "strconv"
+	"strconv"
 	"sync"
 	"time"
 
@@ -184,11 +184,11 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
         // If the CnsMigrateVolume instance is already migrated and
 		// not deleted by the user, remove the instance from the queue.
 		if instance.Status.Migrated && instance.DeletionTimestamp == nil {
-		    // This is an upgrade scenario : In summary, we fetch the SV PVC and check if the
-        	// CNS PVC protection finalizer exist.
-            // TODO: add cnsPvcFinalizer logic
+			// This is an upgrade scenario : In summary, we fetch the SV PVC and check if the
+			// CNS PVC protection finalizer exist.
+			// TODO: add cnsPvcFinalizer logic
 
-            log.Infof("CnsMigrateVolume instance %q status is already migrated. Removing from the queue.", instance.Name)
+			log.Infof("CnsMigrateVolume instance %q status is already migrated. Removing from the queue.", instance.Name)
 			// Cleanup instance entry from backOffDuration map.
 			backOffDurationMapMutex.Lock()
 			delete(backOffDuration, instance.Name)
@@ -196,21 +196,21 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 			return reconcile.Result{}, nil
 		}
 
-        if !instance.Status.Migrated && instance.DeletionTimestamp == nil {
-            volumeID, _, err := getVolumeID(ctx, r.client, instance.Spec.VolumeName, instance.Namespace)
-            log.Infof("getVolumeID volumeName: %v, volumeID: %v", instance.Spec.VolumeName, volumeID)
-            if err != nil {
-            	msg := fmt.Sprintf("failed to get volumeID from volumeName: %q for CnsMigrateVolume "+
-            					   "request with name: %q on namespace: %q. Error: %+v",
-            					   instance.Spec.VolumeName, request.Name, request.Namespace, err)
-            	instance.Status.Error = err.Error()
-            	err = updateCnsMigrateVolume(ctx, r.client, instance)
-            	if err != nil {
-            		log.Errorf("updateCnsMigrateVolume failed. err: %v", err)
-            	}
-            	recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
-            	return reconcile.Result{RequeueAfter: timeout}, err
-            }
+		if !instance.Status.Migrated && instance.DeletionTimestamp == nil {
+			volumeID, _, err := getVolumeID(ctx, r.client, instance.Spec.VolumeName, instance.Namespace)
+			log.Infof("getVolumeID volumeName: %v, volumeID: %v", instance.Spec.VolumeName, volumeID)
+			if err != nil {
+			    msg := fmt.Sprintf("failed to get volumeID from volumeName: %q for CnsMigrateVolume "+
+            	                   "request with name: %q on namespace: %q. Error: %+v",
+            	                   instance.Spec.VolumeName, request.Name, request.Namespace, err)
+			    instance.Status.Error = err.Error()
+			    err = updateCnsMigrateVolume(ctx, r.client, instance)
+			    if err != nil {
+			        log.Errorf("updateCnsMigrateVolume failed. err: %v", err)
+			    }
+			    recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
+			    return reconcile.Result{RequeueAfter: timeout}, err
+			}
 
             // TODO: add cnsFinalizerExists logic
 
@@ -248,10 +248,7 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
                 recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
                 return reconcile.Result{RequeueAfter: timeout}, err
             }
-
-
-            // TODO: add migrate logic here
-		    instance.Status.Migrated = true
+            instance.Status.Migrated = true
 		    instance.Status.Error = ""
 
             // Cleanup instance entry from backOffDuration map.
@@ -266,7 +263,7 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 		}
 		log.Infof("DeletionTimestamp is not empty volumeName: %v", instance.Spec.VolumeName)
 
-        // Cleanup instance entry from backOffDuration map.
+		// Cleanup instance entry from backOffDuration map.
 		backOffDurationMapMutex.Lock()
 		delete(backOffDuration, instance.Name)
 		backOffDurationMapMutex.Unlock()
