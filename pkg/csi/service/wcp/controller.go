@@ -1018,6 +1018,9 @@ func (c *controller) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequ
 						"please delete snapshots before deleting the volume", req.VolumeId, snapshots)
 			}
 		}
+		//TODO: Retrieve the labels for deregister, set DeleteVolumeUtil(...,false) for deregister.
+        log.Infof("deregister volume: %s, the underlying FCD will not be deleted", req.VolumeId)
+
 		faultType, err := common.DeleteVolumeUtil(ctx, c.manager.VolumeManager, req.VolumeId, true)
 		if err != nil {
 			log.Debugf("DeleteVolumeUtil returns fault %s:", faultType)

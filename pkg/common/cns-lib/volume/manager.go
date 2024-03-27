@@ -119,6 +119,8 @@ type Manager interface {
 	QueryVolume(ctx context.Context, queryFilter cnstypes.CnsQueryFilter) (*cnstypes.CnsQueryResult, error)
 	// RelocateVolume migrates volumes to their target datastore as specified in relocateSpecList.
 	RelocateVolume(ctx context.Context, relocateSpecList ...cnstypes.BaseCnsVolumeRelocateSpec) (*object.Task, error)
+	// RelocateVolume migrates volumes to their target datastore as specified in relocateSpecList.
+	RelocateVolumeEx(ctx context.Context, relocateSpecList ...cnstypes.BaseCnsVolumeRelocateSpec) (string, error)
 	// ExpandVolume expands a volume to a new size.
 	// When ExpandVolume failed, the first return value (faultType) and second return value(error) need to be set, and
 	// should not be nil.
@@ -2040,6 +2042,56 @@ func (m *defaultManager) RelocateVolume(ctx context.Context,
 			return nil, err
 		}
 		return res, err
+	}
+	start := time.Now()
+	resp, err := internalRelocateVolume()
+	if err != nil {
+		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsRelocateVolumeOpType,
+			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
+	} else {
+		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsRelocateVolumeOpType,
+			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
+	}
+	return resp, err
+}
+
+func (m *defaultManager) RelocateVolumeEx(ctx context.Context,
+	relocateSpecList ...cnstypes.BaseCnsVolumeRelocateSpec) (string, error) {
+	ctx, cancelFunc := ensureOperationContextHasATimeout(ctx)
+	defer cancelFunc()
+	internalRelocateVolume := func() (string, error) {
+		log := logger.GetLogger(ctx)
+		err := validateManager(ctx, m)
+		if err != nil {
+			log.Errorf("validateManager failed with err: %+v", err)
+			return "", err
+		}
+
+		// Set up the VC connection.
+		err = m.virtualCenter.ConnectCns(ctx)
+		if err != nil {
+			log.Errorf("ConnectCns failed with err: %+v", err)
+			return "", err
+		}
+		task, err := m.virtualCenter.CnsClient.RelocateVolume(ctx, relocateSpecList...)
+		if err != nil {
+			log.Errorf("CNS RelocateVolume failed from vCenter %q with err: %v", m.virtualCenter.Config.Host, err)
+			return "", err
+		}
+		taskInfo, err := task.WaitForResult(ctx, nil)
+        if err != nil {
+        	return "", err
+        }
+        results := taskInfo.Result.(cnstypes.CnsVolumeOperationBatchResult)
+        for _, result := range results.VolumeResults {
+        	fault := result.GetCnsVolumeOperationResult().Fault
+        	if fault != nil {
+        		log.Errorf("Fault: %+v encountered while relocating volume %v", fault)
+        		return "", fmt.Errorf(fault.LocalizedMessage)
+        	}
+        }
+        msg := fmt.Sprintf("relocate task: %v, opId: %v", taskInfo.Result, taskInfo.ActivationId)
+        return msg, nil
 	}
 	start := time.Now()
 	resp, err := internalRelocateVolume()
