@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-    // "github.com/davecgh/go-spew/spew"
+	// "github.com/davecgh/go-spew/spew"
 	cnstypes "github.com/vmware/govmomi/cns/types"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -181,7 +181,7 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 		log.Infof("Reconciling CnsMigrateVolume with Request.Name: %q instance %q timeout %q seconds",
 			request.Name, instance.Name, timeout)
 
-        // If the CnsMigrateVolume instance is already migrated and
+		// If the CnsMigrateVolume instance is already migrated and
 		// not deleted by the user, remove the instance from the queue.
 		if instance.Status.Migrated && instance.DeletionTimestamp == nil {
 			// This is an upgrade scenario : In summary, we fetch the SV PVC and check if the
@@ -212,54 +212,54 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 			    return reconcile.Result{RequeueAfter: timeout}, err
 			}
 
-            // TODO: add cnsFinalizerExists logic
+			// TODO: add cnsFinalizerExists logic
 
-            vcenter, err := cnsvsphere.GetVirtualCenterInstance(ctx, r.configInfo, false)
-            if err != nil {
-                msg := fmt.Sprintf("failed to get virtual center instance with error: %v", err)
-                instance.Status.Error = err.Error()
-                err = updateCnsMigrateVolume(ctx, r.client, instance)
-                if err != nil {
-                    log.Errorf("updateCnsMigrateVolume failed. err: %v", err)
-                }
-                recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
-                return reconcile.Result{RequeueAfter: timeout}, err
-            }
-            err = vcenter.Connect(ctx)
-            if err != nil {
-                msg := fmt.Sprintf("failed to connect to VC with error: %v", err)
-                instance.Status.Error = err.Error()
-                err = updateCnsMigrateVolume(ctx, r.client, instance)
-                if err != nil {
-                    log.Errorf("updateCnsMigrateVolume failed. err: %v", err)
-                }
-                recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
-                return reconcile.Result{RequeueAfter: timeout}, err
-            }
+			vcenter, err := cnsvsphere.GetVirtualCenterInstance(ctx, r.configInfo, false)
+			if err != nil {
+				msg := fmt.Sprintf("failed to get virtual center instance with error: %v", err)
+				instance.Status.Error = err.Error()
+				err = updateCnsMigrateVolume(ctx, r.client, instance)
+				if err != nil {
+					log.Errorf("updateCnsMigrateVolume failed. err: %v", err)
+				}
+				recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
+				return reconcile.Result{RequeueAfter: timeout}, err
+			}
+			err = vcenter.Connect(ctx)
+			if err != nil {
+				msg := fmt.Sprintf("failed to connect to VC with error: %v", err)
+				instance.Status.Error = err.Error()
+				err = updateCnsMigrateVolume(ctx, r.client, instance)
+				if err != nil {
+					log.Errorf("updateCnsMigrateVolume failed. err: %v", err)
+				}
+				recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
+				return reconcile.Result{RequeueAfter: timeout}, err
+			}
 
-            err = relocateVolume(ctx, r.volumeManager, vcenter, volumeID, instance.Spec.DatastoreUrl)
-            if err != nil {
-            	msg := fmt.Sprintf("failed to connect to VC with error: %v", err)
-                instance.Status.Error = err.Error()
-                err = updateCnsMigrateVolume(ctx, r.client, instance)
-                if err != nil {
-                    log.Errorf("updateCnsMigrateVolume failed. err: %v", err)
-                }
-                recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
-                return reconcile.Result{RequeueAfter: timeout}, err
-            }
-            instance.Status.Migrated = true
-		    instance.Status.Error = ""
+			err = relocateVolume(ctx, r.volumeManager, vcenter, volumeID, instance.Spec.DatastoreUrl)
+			if err != nil {
+				msg := fmt.Sprintf("failed to connect to VC with error: %v", err)
+				instance.Status.Error = err.Error()
+				err = updateCnsMigrateVolume(ctx, r.client, instance)
+				if err != nil {
+					log.Errorf("updateCnsMigrateVolume failed. err: %v", err)
+				}
+				recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
+				return reconcile.Result{RequeueAfter: timeout}, err
+			}
+			instance.Status.Migrated = true
+			instance.Status.Error = ""
 
-            // Cleanup instance entry from backOffDuration map.
-		    backOffDurationMapMutex.Lock()
-		    delete(backOffDuration, instance.Name)
-		    backOffDurationMapMutex.Unlock()
-		    return reconcile.Result{}, nil
+			// Cleanup instance entry from backOffDuration map.
+			backOffDurationMapMutex.Lock()
+			delete(backOffDuration, instance.Name)
+			backOffDurationMapMutex.Unlock()
+			return reconcile.Result{}, nil
 		}
 
 		if instance.DeletionTimestamp != nil {
-		    // TODO: add logic to handle with this case
+			// TODO: add logic to handle with this case
 		}
 		log.Infof("DeletionTimestamp is not empty volumeName: %v", instance.Spec.VolumeName)
 
