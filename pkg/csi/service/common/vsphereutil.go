@@ -637,6 +637,51 @@ func DeleteVolumeUtil(ctx context.Context, volManager cnsvolume.Manager, volumeI
 	return "", nil
 }
 
+// CheckDeregisterVolumeUtil is the helper function to check deregister CNS volume for given
+// volumeId.
+func CheckDeregisterVolumeUtil(ctx context.Context, volManager cnsvolume.Manager,
+		volumeID string) (bool, error) {
+	log := logger.GetLogger(ctx)
+
+	queryFilter := cnstypes.CnsQueryFilter{
+					VolumeIds: []cnstypes.CnsVolumeId{{Id: volumeID}},
+	}
+	// Select volume type, volume name and metadata.
+    querySelection := cnstypes.CnsQuerySelection{
+    	Names: []string{
+    		string(cnstypes.QuerySelectionNameTypeVolumeType),
+        	string(cnstypes.QuerySelectionNameTypeVolumeName),
+    		"VOLUME_METADATA",
+    		},
+    }
+	// Query with empty selection. CNS returns only the volume ID from
+	// its cache.
+	queryAllResult, err := volManager.QueryVolumeAsync(ctx, queryFilter, &querySelection)
+	if err != nil {
+		log.Errorf("CheckDeregisterVolumeUtil failed for volume %q with err=%+v", volumeID, err.Error())
+		return false, nil
+	}
+
+	log.Infof("CheckDeregisterVolumeUtil for volume %s result: %+v",
+			volumeID, spew.Sdump(queryAllResult))
+
+	if len(queryAllResult.Volumes) != 1 {
+	    return false, logger.LogNewErrorf(log,
+    			"PVC deregister: QueryVolume failed for volume %s get result %s", volumeID, len(queryAllResult.Volumes))
+    }
+
+	volume := queryAllResult.Volumes[0]
+	if volume.Metadata.ContainerCluster.ClusterId == SupervisorClusterIDForDeRegister {
+    			return true, nil
+    }
+	for _, containercluster := range volume.Metadata.ContainerClusterArray {
+		if containercluster.ClusterId == SupervisorClusterIDForDeRegister {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // ExpandVolumeUtil is the helper function to extend CNS volume for given
 // volumeId.
 func ExpandVolumeUtil(ctx context.Context, vCenterManager vsphere.VirtualCenterManager,

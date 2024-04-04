@@ -1018,15 +1018,29 @@ func (c *controller) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequ
 						"please delete snapshots before deleting the volume", req.VolumeId, snapshots)
 			}
 		}
-		//TODO: Retrieve the labels for deregister, set DeleteVolumeUtil(...,false) for deregister.
-		log.Infof("deregister volume: %s, the underlying FCD will not be deleted", req.VolumeId)
-
-		faultType, err := common.DeleteVolumeUtil(ctx, c.manager.VolumeManager, req.VolumeId, true)
+		deregister, err := common.CheckDeregisterVolumeUtil(ctx, c.manager.VolumeManager, req.VolumeId)
 		if err != nil {
-			log.Debugf("DeleteVolumeUtil returns fault %s:", faultType)
-			return nil, faultType, logger.LogNewErrorCodef(log, codes.Internal,
-				"failed to delete volume: %q. Error: %+v", req.VolumeId, err)
+			log.Debugf("CheckDeregisterVolumeUtil returns %s:", deregister)
+			return nil, csifault.CSIInternalFault, logger.LogNewErrorCodef(log, codes.Internal,
+				"failed to CheckDeregisterVolumeUtil volume: %q. Error: %+v", req.VolumeId, err)
 		}
+		if (deregister) {
+			log.Infof("deregister volume: %s, the underlying FCD will not be deleted", req.VolumeId)
+			faultType, err := common.DeleteVolumeUtil(ctx, c.manager.VolumeManager, req.VolumeId, false)
+			if err != nil {
+				log.Debugf("DeleteVolumeUtil returns fault %s:", faultType)
+				return nil, faultType, logger.LogNewErrorCodef(log, codes.Internal,
+					"failed to delete volume: %q. Error: %+v", req.VolumeId, err)
+			}
+		} else {
+			faultType, err := common.DeleteVolumeUtil(ctx, c.manager.VolumeManager, req.VolumeId, true)
+			if err != nil {
+				log.Debugf("DeleteVolumeUtil returns fault %s:", faultType)
+				return nil, faultType, logger.LogNewErrorCodef(log, codes.Internal,
+					"failed to delete volume: %q. Error: %+v", req.VolumeId, err)
+			}
+		}
+
 		return &csi.DeleteVolumeResponse{}, "", nil
 	}
 	resp, faultType, err := deleteVolumeInternal()

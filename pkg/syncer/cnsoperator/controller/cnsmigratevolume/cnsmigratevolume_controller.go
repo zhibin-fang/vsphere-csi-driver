@@ -24,10 +24,12 @@ import (
 	"sync"
 	"time"
 
-	// "github.com/davecgh/go-spew/spew"
+	"github.com/davecgh/go-spew/spew"
 	cnstypes "github.com/vmware/govmomi/cns/types"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
@@ -37,18 +39,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+	k8sconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	csifault "sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/fault"
 
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	cnsoperatorapis "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator"
 	cnsmigratevolumev1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/cnsmigratevolume/v1alpha1"
+	cnsregistervolumev1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsoperator/cnsregistervolume/v1alpha1"
 	cnsnode "sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/node"
 	cnsvsphere "sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/vsphere"
 	volumes "sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/volume"
+	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/common"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/config"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/logger"
 	k8s "sigs.k8s.io/vsphere-csi-driver/v3/pkg/kubernetes"
+	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/syncer"
 )
 
 const (
@@ -214,6 +220,19 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 
 			// TODO: add cnsFinalizerExists logic
 
+			// Get a config to talk to the apiserver
+			restConfig, err := k8sconfig.GetConfig()
+			if err != nil {
+				log.Errorf("failed to get Kubernetes config. err: %v", err)
+				msg := fmt.Sprintf("failed to get Kubernetes config. err: %v", err)
+				err = updateCnsMigrateVolume(ctx, r.client, instance)
+				if err != nil {
+					log.Errorf("updateCnsMigrateVolume failed. err: %v", err)
+				}
+				recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
+            	return reconcile.Result{RequeueAfter: timeout}, err
+			}
+
 			vcenter, err := cnsvsphere.GetVirtualCenterInstance(ctx, r.configInfo, false)
 			if err != nil {
 				msg := fmt.Sprintf("failed to get virtual center instance with error: %v", err)
@@ -237,7 +256,9 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 				return reconcile.Result{RequeueAfter: timeout}, err
 			}
 
-			err = relocateVolume(ctx, r.volumeManager, vcenter, volumeID, instance.Spec.DatastoreUrl)
+			//verify datastoreUrl is accessible
+			err = isDatastoreAccessible(ctx, vcenter, r.configInfo.Cfg.Global.ClusterID,
+						instance.Spec.DatastoreUrl)
 			if err != nil {
 				msg := fmt.Sprintf("failed to connect to VC with error: %v", err)
 				instance.Status.Error = err.Error()
@@ -248,6 +269,61 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 				recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
 				return reconcile.Result{RequeueAfter: timeout}, err
 			}
+
+			// TODO: check datastore Url with storage class if storageClass is provided;
+			//       in the future, we might enhance to recommend one datastore from storageClass
+            sourceDatastoreUrl := ""
+			if (instance.Spec.Namespace != "") {
+				// deregister volume from original namespace
+				sourceDatastoreUrl, err = deRegisterVolume(ctx, r.client, r.volumeManager, instance.Spec.VolumeName,
+                					volumeID, r.configInfo.Cfg.Global.ClusterID, instance.Namespace)
+				if err != nil {
+					log.Errorf("PVC %s deregister failed. err: %v",
+							instance.Spec.VolumeName, err)
+					msg := fmt.Sprintf("PVC %s deregister failed with error: %v",
+							instance.Spec.VolumeName, err)
+					instance.Status.Error = err.Error()
+					err = updateCnsMigrateVolume(ctx, r.client, instance)
+					if err != nil {
+						log.Errorf("updateCnsMigrateVolume deregister failed. err: %v", err)
+					}
+					recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
+					return reconcile.Result{RequeueAfter: timeout}, err
+				}
+			}
+
+			if (sourceDatastoreUrl != instance.Spec.DatastoreUrl) {
+				log.Infof("volumeID: %v relocate from %s to %s", volumeID, sourceDatastoreUrl,
+					instance.Spec.DatastoreUrl)
+				err = relocateVolume(ctx, r.volumeManager, vcenter, volumeID, instance.Spec.DatastoreUrl)
+				if err != nil {
+					msg := fmt.Sprintf("failed to relocate volume with error: %v", err)
+					instance.Status.Error = err.Error()
+					err = updateCnsMigrateVolume(ctx, r.client, instance)
+					if err != nil {
+						log.Errorf("updateCnsMigrateVolume relocate failed. err: %v", err)
+					}
+					recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
+					return reconcile.Result{RequeueAfter: timeout}, err
+				}
+			}
+
+			if (instance.Spec.Namespace != "") {
+				// register volume to the new namespace
+				err = registerVolume(ctx, restConfig, instance.Spec.Namespace,
+                	volumeID, "", instance.Spec.VolumeName, v1.ReadWriteOnce)
+				if err != nil {
+					log.Errorf("register volume failed. err: %v", err)
+					msg := fmt.Sprintf("register volume failed. err: %v", err)
+					err = updateCnsMigrateVolume(ctx, r.client, instance)
+					if err != nil {
+						log.Errorf("updateCnsMigrateVolume register failed. err: %v", err)
+					}
+					recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
+					return reconcile.Result{RequeueAfter: timeout}, err
+				}
+			}
+
 			instance.Status.Migrated = true
 			instance.Status.Error = ""
 
@@ -274,19 +350,132 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 	return resp, err
 }
 
+func updateMetadataForDeregister(ctx context.Context,
+			volumeManager volumes.Manager, volumeID string,
+			clusterID string) (string, error) {
+    log := logger.GetLogger(ctx)
+
+	queryFilter := cnstypes.CnsQueryFilter{
+					VolumeIds: []cnstypes.CnsVolumeId{{Id: volumeID}},
+	}
+	// Select volume type, volume name and metadata.
+    querySelection := cnstypes.CnsQuerySelection{
+    	Names: []string{
+    		string(cnstypes.QuerySelectionNameTypeVolumeType),
+        	string(cnstypes.QuerySelectionNameTypeDataStoreUrl),
+    		"VOLUME_METADATA",
+    		},
+    	}
+	// Query with empty selection. CNS returns only the volume ID from
+	// its cache.
+	queryAllResult, err := volumeManager.QueryVolumeAsync(ctx, queryFilter, &querySelection)
+	if err != nil {
+		log.Errorf("PVC deregister: QueryVolume failed for volume %q with err=%+v", volumeID, err.Error())
+		// If volume is not found from cns, then it is deregistered.
+		return "", nil
+	}
+
+	log.Infof("PVC deregister: QueryVolume for volume %s result: %+v",
+			volumeID, spew.Sdump(queryAllResult))
+
+	if len(queryAllResult.Volumes) != 1 {
+	    return "", logger.LogNewErrorf(log,
+    			"PVC deregister: QueryVolume failed for volume %s get result %s", volumeID, len(queryAllResult.Volumes))
+    }
+
+	volume := queryAllResult.Volumes[0]
+	volume.Metadata.ContainerCluster.ClusterId = common.SupervisorClusterIDForDeRegister
+	updateSpec := cnstypes.CnsVolumeMetadataUpdateSpec{
+				VolumeId: cnstypes.CnsVolumeId{
+        						Id: volumeID,
+				},
+				Metadata: cnstypes.CnsVolumeMetadata{
+								ContainerCluster:      volume.Metadata.ContainerCluster,
+				},
+	}
+	log.Infof("PVC deregister: UpdateVolumeMetadata for volume %s with updateSpec: %+v",
+				volumeID, spew.Sdump(updateSpec))
+	if err := volumeManager.UpdateVolumeMetadata(ctx, &updateSpec); err != nil {
+		log.Warnf("PVC deregister: UpdateVolumeMetadata failed while replacing clusterID "+
+					"to be deregistered. Error: %+v", err)
+		return "", err
+	}
+
+	return volume.DatastoreUrl, nil
+}
+
+func deRegisterVolume(ctx context.Context, client client.Client,
+					volumeManager volumes.Manager, volumeName string,
+					volumeID string, clusterID string, namespace string) (string, error) {
+    log := logger.GetLogger(ctx)
+
+	datastoreUrl, err := updateMetadataForDeregister(ctx ,volumeManager, volumeID, clusterID)
+	if err != nil {
+		log.Warnf("PVC deregister: UpdateVolumeMetadata failed while replacing clusterID "+
+					"to be deregistered. Error: %+v", err)
+		return "", err
+	}
+	// Get PVC by pvcName from namespace.
+	pvc := &v1.PersistentVolumeClaim{}
+	err = client.Get(ctx, k8stypes.NamespacedName{Name: volumeName,
+			Namespace: namespace}, pvc)
+	if err != nil {
+		log.Warnf("PVC deregister: query pvc %s failed, Error: %+v", volumeName, err)
+		return "", err
+	}
+	log.Infof("Now deleting pvc: %s",  pvc)
+	err = client.Delete(ctx, pvc)
+	if err != nil {
+		log.Warnf("PVC deregister: delete pvc %s failed, Error: %+v", volumeName, err)
+       	return "", err
+	}
+	return datastoreUrl, nil
+	/*
+	pvc, err := k8sclient.CoreV1().PersistentVolumeClaims(instance.Namespace).Delete(ctx,
+                		pvcSpec, metav1.CreateOptions{})
+    */
+}
+
+func registerVolume(
+	ctx context.Context, restConfig *rest.Config,
+	namespace string, volumeID string, vmdkPath string,
+	persistentVolumeClaimName string,
+	accessMode v1.PersistentVolumeAccessMode) error {
+	var (
+		cnsRegisterVolume *cnsregistervolumev1alpha1.CnsRegisterVolume
+	)
+	cnsRegisterVolume = &cnsregistervolumev1alpha1.CnsRegisterVolume{
+		TypeMeta: metav1.TypeMeta{},
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: common.RegisterVolumeCRDPrefixForMigrate,
+			Namespace:    namespace,
+		},
+		Spec: cnsregistervolumev1alpha1.CnsRegisterVolumeSpec{
+			PvcName: persistentVolumeClaimName,
+			AccessMode: v1.PersistentVolumeAccessMode(
+				accessMode,
+			),
+		},
+	}
+
+	if vmdkPath != "" {
+		cnsRegisterVolume.Spec.DiskURLPath = vmdkPath
+	}
+
+	if volumeID != "" {
+		cnsRegisterVolume.Spec.VolumeID = volumeID
+	}
+
+	cnsOperatorClient, err := k8s.NewClientForGroup(ctx, restConfig, cnsoperatorapis.GroupName)
+	err = cnsOperatorClient.Create(ctx, cnsRegisterVolume)
+
+	return err
+
+}
+
 func relocateVolume(ctx context.Context,
 	volumeManager volumes.Manager, vcenter *cnsvsphere.VirtualCenter, volumeID string, datastoreUrl string) (error) {
     log := logger.GetLogger(ctx)
-
-    /*
-    volumeIds := []cnstypes.CnsVolumeId{{Id: volumeID}}
-    queryVolumeInfoResult, err := volumeManager.QueryVolumeInfo(ctx, volumeIds)
-	if err != nil {
-		log.Errorf("QueryVolumeInfo failed for volumeID: %s, err: %v", volumeID, err)
-	}
-	log.Infof("QueryVolumeInfo successfully returned volumeInfo %v for volumeIDList %v:",
-			spew.Sdump(queryVolumeInfoResult), volumeIds)
-    */
 
     // Get datastore object list.
     dsInfoObjList, err := getDatastoreInfoObjList(ctx, vcenter, datastoreUrl)
@@ -359,6 +548,53 @@ func getVolumeID(ctx context.Context, client client.Client, pvcName string,
 		return "", csifault.CSIPvNotFoundInPvcSpecFault, err
 	}
 	return pv.Spec.CSI.VolumeHandle, "", nil
+}
+
+func isDatastoreAccessible(ctx context.Context, vc *cnsvsphere.VirtualCenter, clusterID string, datastoreUrl string) (error) {
+	log := logger.GetLogger(ctx)
+	if syncer.IsPodVMOnStretchSupervisorFSSEnabled {
+		// TODO: Add logic for IsPodVMOnStretchSupervisorFSSEnabled and len(clusterComputeResourceMoIds) > 1
+		/*
+		azClustersMap := topologyMgr.GetAZClustersMap(ctx)
+		isAccessible := isDatastoreAccessibleToAZClusters(ctx, vc, azClustersMap, datastoreUrl)
+		if !isAccessible {
+			return logger.LogNewErrorf(log,
+						"datastore: %s  is not accessible to any of the AZ clusters: %v",
+						datastoreURL, azClustersMap)
+		}
+		*/
+		return nil
+	} else {
+		// Verify if the volume is accessible to Supervisor cluster.
+		isAccessible := isDatastoreAccessibleToCluster(ctx, vc, clusterID, datastoreUrl)
+		if !isAccessible {
+			log.Errorf("datastore: %s is not accessible to all nodes in the cluster: %s",
+				datastoreUrl, clusterID)
+			return logger.LogNewErrorf(log,
+									"datastore: %s is not accessible to all nodes in the cluster: %v",
+									datastoreUrl, clusterID)
+		}
+		return nil
+	}
+}
+
+// isDatastoreAccessibleToCluster verifies if the datastoreUrl is accessible to
+// cluster with clusterID.
+func isDatastoreAccessibleToCluster(ctx context.Context, vc *cnsvsphere.VirtualCenter,
+	clusterID string, datastoreURL string) bool {
+	log := logger.GetLogger(ctx)
+	sharedDatastores, _, err := cnsvsphere.GetCandidateDatastoresInCluster(ctx, vc, clusterID, false)
+	if err != nil {
+		log.Errorf("Failed to get candidate datastores for cluster: %s with err: %+v", clusterID, err)
+		return false
+	}
+	for _, ds := range sharedDatastores {
+		if ds.Info.Url == datastoreURL {
+			log.Infof("Found datastoreUrl: %s is accessible to cluster: %s", datastoreURL, clusterID)
+			return true
+		}
+	}
+	return false
 }
 
 func updateCnsMigrateVolume(ctx context.Context, client client.Client,
