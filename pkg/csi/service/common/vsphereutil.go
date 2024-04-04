@@ -647,13 +647,13 @@ func CheckDeregisterVolumeUtil(ctx context.Context, volManager cnsvolume.Manager
 					VolumeIds: []cnstypes.CnsVolumeId{{Id: volumeID}},
 	}
 	// Select volume type, volume name and metadata.
-    querySelection := cnstypes.CnsQuerySelection{
-    	Names: []string{
-    		string(cnstypes.QuerySelectionNameTypeVolumeType),
-        	string(cnstypes.QuerySelectionNameTypeVolumeName),
-    		"VOLUME_METADATA",
-    		},
-    }
+	querySelection := cnstypes.CnsQuerySelection{
+		Names: []string{
+			string(cnstypes.QuerySelectionNameTypeVolumeType),
+	    	string(cnstypes.QuerySelectionNameTypeVolumeName),
+			"VOLUME_METADATA",
+		},
+	}
 	// Query with empty selection. CNS returns only the volume ID from
 	// its cache.
 	queryAllResult, err := volManager.QueryVolumeAsync(ctx, queryFilter, &querySelection)
@@ -667,13 +667,14 @@ func CheckDeregisterVolumeUtil(ctx context.Context, volManager cnsvolume.Manager
 
 	if len(queryAllResult.Volumes) != 1 {
 	    return false, logger.LogNewErrorf(log,
-    			"PVC deregister: QueryVolume failed for volume %s get result %s", volumeID, len(queryAllResult.Volumes))
+    			"PVC deregister: QueryVolume failed for volume %s get result %s",
+    			volumeID, len(queryAllResult.Volumes))
     }
 
 	volume := queryAllResult.Volumes[0]
 	if volume.Metadata.ContainerCluster.ClusterId == SupervisorClusterIDForDeRegister {
-    			return true, nil
-    }
+		return true, nil
+	}
 	for _, containercluster := range volume.Metadata.ContainerClusterArray {
 		if containercluster.ClusterId == SupervisorClusterIDForDeRegister {
 			return true, nil
