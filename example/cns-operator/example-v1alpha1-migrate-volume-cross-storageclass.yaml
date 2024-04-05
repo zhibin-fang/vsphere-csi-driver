@@ -1,8 +1,10 @@
 apiVersion: cns.vmware.com/v1alpha1
 kind: CnsMigrateVolume
 metadata:
-  name: example-migrate-volume-within-storageclass
+  name: example-migrate-volume-cross-storageclass
   namespace: example-ns
 spec:
   volumename: example-pvc
   datastoreurl: ds:///vmfs/volumes/65aeb9b9-a51d9aec-c29a-0200aa84f011/
+  StorageClass: wcpnfs-storage-profile
+  namespace: example-ns1

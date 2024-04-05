@@ -119,7 +119,7 @@ type Manager interface {
 	QueryVolume(ctx context.Context, queryFilter cnstypes.CnsQueryFilter) (*cnstypes.CnsQueryResult, error)
 	// RelocateVolume migrates volumes to their target datastore as specified in relocateSpecList.
 	RelocateVolume(ctx context.Context, relocateSpecList ...cnstypes.BaseCnsVolumeRelocateSpec) (*object.Task, error)
-	// RelocateVolumeVslm migrates volumes to their target datastore through Vslm endpoint.
+	// RelocateVolumeVslm migrates volume to their target datastore through Vslm endpoint.
 	RelocateVolumeVslm(ctx context.Context, datastoreUrl string, volumeID string) error
 	// ExpandVolume expands a volume to a new size.
 	// When ExpandVolume failed, the first return value (faultType) and second return value(error) need to be set, and
@@ -2109,10 +2109,10 @@ func (m *defaultManager) RelocateVolumeVslm(ctx context.Context, datastoreUrl st
 			return err
 		}
 		_, err = task.QueryResult(ctx)
-        if err != nil {
-        	return err
-        }
-        return nil
+		if err != nil {
+			return err
+		}
+		return nil
 	}
 	start := time.Now()
 	err := internalRelocateVolume()

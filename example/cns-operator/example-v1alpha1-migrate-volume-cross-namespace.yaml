@@ -1,0 +1,9 @@
+apiVersion: cns.vmware.com/v1alpha1
+kind: CnsMigrateVolume
+metadata:
+  name: example-migrate-volume-cross-namespace
+  namespace: example-ns
+spec:
+  volumename: example-pvc
+  datastoreurl: ds:///vmfs/volumes/83c5cfbd-9c3da299/
+  namespace: example-ns1

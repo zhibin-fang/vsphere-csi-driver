@@ -654,8 +654,6 @@ func CheckDeregisterVolumeUtil(ctx context.Context, volManager cnsvolume.Manager
 			"VOLUME_METADATA",
 		},
 	}
-	// Query with empty selection. CNS returns only the volume ID from
-	// its cache.
 	queryAllResult, err := volManager.QueryVolumeAsync(ctx, queryFilter, &querySelection)
 	if err != nil {
 		log.Errorf("CheckDeregisterVolumeUtil failed for volume %q with err=%+v", volumeID, err.Error())
@@ -666,10 +664,10 @@ func CheckDeregisterVolumeUtil(ctx context.Context, volManager cnsvolume.Manager
 			volumeID, spew.Sdump(queryAllResult))
 
 	if len(queryAllResult.Volumes) != 1 {
-	    return false, logger.LogNewErrorf(log,
-    			"PVC deregister: QueryVolume failed for volume %s get result %s",
-    			volumeID, len(queryAllResult.Volumes))
-    }
+		return false, logger.LogNewErrorf(log,
+				"PVC deregister: QueryVolume failed for volume %s get result %s",
+				volumeID, len(queryAllResult.Volumes))
+	}
 
 	volume := queryAllResult.Volumes[0]
 	if volume.Metadata.ContainerCluster.ClusterId == SupervisorClusterIDForDeRegister {
@@ -700,16 +698,15 @@ func UpdateMetadataDeregisterVolumeUtil(ctx context.Context,
 	}
 	queryAllResult, err := volManager.QueryVolumeAsync(ctx, queryFilter, &querySelection)
 	if err != nil {
-		log.Errorf("PVC Deregister: QueryVolume failed for volume %q with err=%+v", volumeID, err.Error())
-		// If volume is not found from cns, then it is deregistered.
+		log.Errorf("deregisterUtil: QueryVolume failed for volume %q with err=%+v", volumeID, err.Error())
 		return nil
 	}
-	log.Infof("PVC Deregister: QueryVolume for volume %s result: %+v",
+	log.Infof("deregisterUtil: QueryVolume for volume %s result: %+v",
 			volumeID, spew.Sdump(queryAllResult))
 
 	if len(queryAllResult.Volumes) != 1 {
 		return logger.LogNewErrorf(log,
-			"PVC Deregister: QueryVolume failed for volume %s get result %s", volumeID, len(queryAllResult.Volumes))
+			"deregisterUtil: QueryVolume failed for volume %s get result %s", volumeID, len(queryAllResult.Volumes))
 	}
 
 	volume := queryAllResult.Volumes[0]
@@ -722,10 +719,10 @@ func UpdateMetadataDeregisterVolumeUtil(ctx context.Context,
 								ContainerCluster:      volume.Metadata.ContainerCluster,
 				},
 	}
-	log.Infof("PVC deregister: UpdateVolumeMetadata for volume %s with updateSpec: %+v",
+	log.Infof("deregisterUtil: UpdateVolumeMetadata for volume %s with updateSpec: %+v",
 				volumeID, updateSpec)
 	if err := volManager.UpdateVolumeMetadata(ctx, &updateSpec); err != nil {
-		log.Warnf("PVC deregister: UpdateVolumeMetadata failed while replacing clusterID "+
+		log.Warnf("deregisterUtil: UpdateVolumeMetadata failed while replacing clusterID "+
 					"to be deregistered. Error: %+v", err)
 		return err
 	}

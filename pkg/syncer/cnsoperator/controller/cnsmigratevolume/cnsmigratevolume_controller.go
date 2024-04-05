@@ -367,7 +367,7 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 
 			log.Infof("Completed CnsMigrateVolume volumeName: %v, volumeID: %v",
 					instance.Spec.VolumeName, volumeID)
-            // Cleanup instance entry from backOffDuration map.
+			// Cleanup instance entry from backOffDuration map.
 			backOffDurationMapMutex.Lock()
 			delete(backOffDuration, instance.Name)
 			backOffDurationMapMutex.Unlock()
