@@ -348,7 +348,7 @@ const (
 	// WCPCapabilityConfigMapName is the name of the configmap where WCP component's FSS values are stored.
 	WCPCapabilityConfigMapName = "wcp-cluster-capabilities"
 
-	// KubeSystemNamespace is the namespace for system resources.
+	// SupervisorClusterIDForDeRegister is indicator for PVC andPV to be deleted.
 	SupervisorClusterIDForDeRegister = "vSphereSupervisorID-Deregister"
 
 	// RegisterVolumeForMigrate is prefix for RegisterVolume CRD resources.

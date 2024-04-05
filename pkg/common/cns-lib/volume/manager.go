@@ -119,8 +119,8 @@ type Manager interface {
 	QueryVolume(ctx context.Context, queryFilter cnstypes.CnsQueryFilter) (*cnstypes.CnsQueryResult, error)
 	// RelocateVolume migrates volumes to their target datastore as specified in relocateSpecList.
 	RelocateVolume(ctx context.Context, relocateSpecList ...cnstypes.BaseCnsVolumeRelocateSpec) (*object.Task, error)
-	// RelocateVolume migrates volumes to their target datastore as specified in relocateSpecList.
-	RelocateVolumeEx(ctx context.Context, relocateSpecList ...cnstypes.BaseCnsVolumeRelocateSpec) (string, error)
+	// RelocateVolumeVslm migrates volumes to their target datastore through Vslm endpoint.
+	RelocateVolumeVslm(ctx context.Context, datastoreUrl string, volumeID string) error
 	// ExpandVolume expands a volume to a new size.
 	// When ExpandVolume failed, the first return value (faultType) and second return value(error) need to be set, and
 	// should not be nil.
@@ -2055,46 +2055,67 @@ func (m *defaultManager) RelocateVolume(ctx context.Context,
 	return resp, err
 }
 
-func (m *defaultManager) RelocateVolumeEx(ctx context.Context,
-	relocateSpecList ...cnstypes.BaseCnsVolumeRelocateSpec) (string, error) {
+func (m *defaultManager) RelocateVolumeVslm(ctx context.Context, datastoreUrl string, volumeID string) error {
 	ctx, cancelFunc := ensureOperationContextHasATimeout(ctx)
 	defer cancelFunc()
-	internalRelocateVolume := func() (string, error) {
+	internalRelocateVolume := func() (error) {
 		log := logger.GetLogger(ctx)
 		err := validateManager(ctx, m)
 		if err != nil {
-			log.Errorf("validateManager failed with err: %+v", err)
-			return "", err
+			log.Errorf("Vslm validateManager failed with err: %+v", err)
+			return err
 		}
 
 		// Set up the VC connection.
-		err = m.virtualCenter.ConnectCns(ctx)
+		err = m.virtualCenter.ConnectVslm(ctx)
 		if err != nil {
-			log.Errorf("ConnectCns failed with err: %+v", err)
-			return "", err
+			log.Errorf("Vslm ConnectVslm failed with err: %+v", err)
+			return err
 		}
-		task, err := m.virtualCenter.CnsClient.RelocateVolume(ctx, relocateSpecList...)
+		globalObjectManager := vslm.NewGlobalObjectManager(m.virtualCenter.VslmClient)
+
+		datacenters, err := m.virtualCenter.ListDatacenters(ctx)
 		if err != nil {
-			log.Errorf("CNS RelocateVolume failed from vCenter %q with err: %v", m.virtualCenter.Config.Host, err)
-			return "", err
+			return err
 		}
-		taskInfo, err := task.WaitForResult(ctx, nil)
+		var datastoreInfoObj *cnsvsphere.DatastoreInfo
+		for _, datacenter := range datacenters {
+			datastoreInfoObj, err = datacenter.GetDatastoreInfoByURL(ctx, datastoreUrl)
+			if err == nil {
+				break
+			}
+		}
+		if err != nil {
+			log.Infof("Vslm failed find datastore URL %q from VC %q  with err: %+v",
+					datastoreUrl, m.virtualCenter.Config.Host, err)
+			return err
+		}
+		log.Infof("Vslm find datastore with URL %q from VC %q",
+				datastoreUrl, m.virtualCenter.Config.Host)
+		spec := vim25types.VslmRelocateSpec{
+			VslmMigrateSpec: vim25types.VslmMigrateSpec{
+				DynamicData: vim25types.DynamicData{},
+				BackingSpec: &vim25types.VslmCreateSpecDiskFileBackingSpec{
+					VslmCreateSpecBackingSpec: vim25types.VslmCreateSpecBackingSpec{
+						Datastore: datastoreInfoObj.Reference(),
+					},
+				},
+			},
+		}
+		task, err := globalObjectManager.Relocate(ctx, vim25types.ID{Id: volumeID}, spec)
+		if err != nil {
+			log.Errorf("Vslm failed RelocateVolume from vCenter %q with err: %v",
+				m.virtualCenter.Config.Host, err)
+			return err
+		}
+		_, err = task.QueryResult(ctx)
         if err != nil {
-        	return "", err
+        	return err
         }
-        results := taskInfo.Result.(cnstypes.CnsVolumeOperationBatchResult)
-        for _, result := range results.VolumeResults {
-        	fault := result.GetCnsVolumeOperationResult().Fault
-        	if fault != nil {
-        		log.Errorf("Fault: %+v encountered while relocating volume %v", fault)
-        		return "", fmt.Errorf(fault.LocalizedMessage)
-        	}
-        }
-        msg := fmt.Sprintf("relocate task: %v, opId: %v", taskInfo.Result, taskInfo.ActivationId)
-        return msg, nil
+        return nil
 	}
 	start := time.Now()
-	resp, err := internalRelocateVolume()
+	err := internalRelocateVolume()
 	if err != nil {
 		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsRelocateVolumeOpType,
 			prometheus.PrometheusFailStatus).Observe(time.Since(start).Seconds())
@@ -2102,7 +2123,7 @@ func (m *defaultManager) RelocateVolumeEx(ctx context.Context,
 		prometheus.CnsControlOpsHistVec.WithLabelValues(prometheus.PrometheusCnsRelocateVolumeOpType,
 			prometheus.PrometheusPassStatus).Observe(time.Since(start).Seconds())
 	}
-	return resp, err
+	return err
 }
 
 // ConfigureVolumeACLs configures net permissions for a given CnsVolumeACLConfigureSpec.

@@ -270,13 +270,42 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 				return reconcile.Result{RequeueAfter: timeout}, err
 			}
 
-			// TODO: check datastore Url with storage class if storageClass is provided;
-			//       in the future, we might enhance to recommend one datastore from storageClass
-			sourceDatastoreUrl := ""
+			sourceDatastoreUrl, err := queryVolumeDatastoreUrl(ctx, r.volumeManager, volumeID)
+			if err != nil {
+				msg := fmt.Sprintf("failed to query volume error: %v", err)
+				instance.Status.Error = err.Error()
+				err = updateCnsMigrateVolume(ctx, r.client, instance)
+				if err != nil {
+					log.Errorf("updateCnsMigrateVolume failed. err: %v", err)
+				}
+				recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
+				return reconcile.Result{RequeueAfter: timeout}, err
+			}
+
+			// TODO: Today we depend on instance.Spec.datastoreurl for the target;
+			//       next step is to recommend one target datastore from target storageClass
+
 			if (instance.Spec.Namespace != "") {
-				// deregister volume from original namespace
-				sourceDatastoreUrl, err = deRegisterVolume(ctx, r.client, r.volumeManager, instance.Spec.VolumeName,
-                					volumeID, r.configInfo.Cfg.Global.ClusterID, instance.Namespace)
+				// Deregister volume from its namespace, the first step is to update metadata
+				// including one clusterID indicating deregister, the second step is to issue
+				// PVC delete call to API server, the third step is CSI controller will delete
+				// PVC/PV while keeping the underlying FCD in the datastore.
+				err := common.UpdateMetadataDeregisterVolumeUtil(ctx, r.volumeManager, volumeID)
+				if err != nil {
+					log.Warnf("deRegisterVolume: UpdateVolumeMetadata failed while replacing clusterID "+
+						"to be deregistered. Error: %+v", err)
+					msg := fmt.Sprintf("PVC %s deregister UpdateVolumeMetadata failed with error: %v",
+							instance.Spec.VolumeName, err)
+					instance.Status.Error = err.Error()
+					err = updateCnsMigrateVolume(ctx, r.client, instance)
+					if err != nil {
+						log.Errorf("updateCnsMigrateVolume deregister failed. err: %v", err)
+					}
+					recordEvent(ctx, r, instance, v1.EventTypeWarning, msg)
+					return reconcile.Result{RequeueAfter: timeout}, err
+				}
+				err = deRegisterVolume(ctx, r.client, instance.Spec.VolumeName,
+                					volumeID, instance.Namespace)
 				if err != nil {
 					log.Errorf("PVC %s deregister failed. err: %v",
 							instance.Spec.VolumeName, err)
@@ -293,9 +322,9 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 			}
 
 			if (sourceDatastoreUrl != instance.Spec.DatastoreUrl) {
-				log.Infof("volumeID: %v relocate from %s to %s", volumeID, sourceDatastoreUrl,
+				log.Infof("relocate volumeID: %v from %s to %s", volumeID, sourceDatastoreUrl,
 					instance.Spec.DatastoreUrl)
-				err = relocateVolume(ctx, r.volumeManager, vcenter, volumeID, instance.Spec.DatastoreUrl)
+				err = r.volumeManager.RelocateVolumeVslm(ctx, instance.Spec.DatastoreUrl, volumeID)
 				if err != nil {
 					msg := fmt.Sprintf("failed to relocate volume with error: %v", err)
 					instance.Status.Error = err.Error()
@@ -310,6 +339,15 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 
 			if (instance.Spec.Namespace != "") {
 				// register volume to the new namespace
+
+				// TODO: CnsRegisterVolume requires FCD to be associated with policy id,
+				//       then it can find StorageClass based on policy id.
+				//
+				//       In case FCD is not associated with policy id, we need to call
+				//       vslm endpoint to UpdateVstorageObjectPolicy.
+				//
+				//       Supervisor PVC/PV is already associated with policy id,
+				//       so UpdateVstorageObjectPolicy is skipped here.
 				err = registerVolume(ctx, restConfig, instance.Spec.Namespace,
 									volumeID, "", instance.Spec.VolumeName, v1.ReadWriteOnce)
 				if err != nil {
@@ -327,7 +365,9 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 			instance.Status.Migrated = true
 			instance.Status.Error = ""
 
-			// Cleanup instance entry from backOffDuration map.
+			log.Infof("Completed CnsMigrateVolume volumeName: %v, volumeID: %v",
+					instance.Spec.VolumeName, volumeID)
+            // Cleanup instance entry from backOffDuration map.
 			backOffDurationMapMutex.Lock()
 			delete(backOffDuration, instance.Name)
 			backOffDurationMapMutex.Unlock()
@@ -350,9 +390,8 @@ func (r *ReconcileCnsMigrateVolume) Reconcile(ctx context.Context,
 	return resp, err
 }
 
-func updateMetadataForDeregister(ctx context.Context,
-			volumeManager volumes.Manager, volumeID string,
-			clusterID string) (string, error) {
+func queryVolumeDatastoreUrl(ctx context.Context,
+			volumeManager volumes.Manager, volumeID string) (string, error) {
 	log := logger.GetLogger(ctx)
 
 	queryFilter := cnstypes.CnsQueryFilter{
@@ -361,75 +400,75 @@ func updateMetadataForDeregister(ctx context.Context,
 	// Select volume type, volume name and metadata.
 	querySelection := cnstypes.CnsQuerySelection{
 		Names: []string{
-			string(cnstypes.QuerySelectionNameTypeVolumeType),
 			string(cnstypes.QuerySelectionNameTypeDataStoreUrl),
-			"VOLUME_METADATA",
 		},
 	}
-	// Query with empty selection. CNS returns only the volume ID from
-	// its cache.
-	queryAllResult, err := volumeManager.QueryVolumeAsync(ctx, queryFilter, &querySelection)
+	queryResult, err := volumeManager.QueryVolumeAsync(ctx, queryFilter, &querySelection)
 	if err != nil {
-		log.Errorf("PVC deregister: QueryVolume failed for volume %q with err=%+v", volumeID, err.Error())
-		// If volume is not found from cns, then it is deregistered.
-		return "", nil
-	}
-
-	log.Infof("PVC deregister: QueryVolume for volume %s result: %+v",
-			volumeID, spew.Sdump(queryAllResult))
-
-	if len(queryAllResult.Volumes) != 1 {
-		return "", logger.LogNewErrorf(log,
-			"PVC deregister: QueryVolume failed for volume %s get result %s", volumeID, len(queryAllResult.Volumes))
-	}
-
-	volume := queryAllResult.Volumes[0]
-	volume.Metadata.ContainerCluster.ClusterId = common.SupervisorClusterIDForDeRegister
-	updateSpec := cnstypes.CnsVolumeMetadataUpdateSpec{
-				VolumeId: cnstypes.CnsVolumeId{
-        						Id: volumeID,
-				},
-				Metadata: cnstypes.CnsVolumeMetadata{
-								ContainerCluster:      volume.Metadata.ContainerCluster,
-				},
-	}
-	log.Infof("PVC deregister: UpdateVolumeMetadata for volume %s with updateSpec: %+v",
-				volumeID, spew.Sdump(updateSpec))
-	if err := volumeManager.UpdateVolumeMetadata(ctx, &updateSpec); err != nil {
-		log.Warnf("PVC deregister: UpdateVolumeMetadata failed while replacing clusterID "+
-					"to be deregistered. Error: %+v", err)
+		log.Errorf("QueryVolume failed for volume %q with err=%+v", volumeID, err.Error())
 		return "", err
 	}
 
-	return volume.DatastoreUrl, nil
+	log.Infof("VolumeDatastoreUrl volume %s result: %+v", volumeID, spew.Sdump(queryResult))
+
+	if len(queryResult.Volumes) == 0 {
+		return "", logger.LogNewErrorf(log,
+				"VolumeDatastoreUrl volume %s is not found", volumeID)
+	}
+
+	return queryResult.Volumes[0].DatastoreUrl, nil
 }
 
 func deRegisterVolume(ctx context.Context, client client.Client,
-				volumeManager volumes.Manager, volumeName string,
-				volumeID string, clusterID string, namespace string) (string, error) {
+				volumeName string, volumeID string, namespace string) error {
 	log := logger.GetLogger(ctx)
 
-	datastoreUrl, err := updateMetadataForDeregister(ctx ,volumeManager, volumeID, clusterID)
-	if err != nil {
-		log.Warnf("PVC deregister: UpdateVolumeMetadata failed while replacing clusterID "+
-					"to be deregistered. Error: %+v", err)
-		return "", err
-	}
 	// Get PVC by pvcName from namespace.
 	pvc := &v1.PersistentVolumeClaim{}
-	err = client.Get(ctx, k8stypes.NamespacedName{Name: volumeName,
+	err := client.Get(ctx, k8stypes.NamespacedName{Name: volumeName,
 			Namespace: namespace}, pvc)
 	if err != nil {
-		log.Warnf("PVC deregister: query pvc %s failed, Error: %+v", volumeName, err)
-		return "", err
+		log.Warnf("deRegisterVolume: query pvc %s failed, Error: %+v", volumeName, err)
+		return err
 	}
-	log.Infof("Now deleting pvc: %s",  pvc)
+	log.Infof("deRegisterVolume: deleting pvc %s",  pvc)
 	err = client.Delete(ctx, pvc)
 	if err != nil {
-		log.Warnf("PVC deregister: delete pvc %s failed, Error: %+v", volumeName, err)
-		return "", err
+		log.Warnf("deRegisterVolume: delete pvc %s failed, Error: %+v", volumeName, err)
+		return err
 	}
-	return datastoreUrl, nil
+
+	// Watch for PVC to be deleted.
+	isDelete := isPVCDelete(ctx, client, volumeName, namespace)
+	if !isDelete {
+		return logger.LogNewErrorf(log,
+    			"deRegisterVolume: delete pvc %s failed, timeout during checking", volumeName)
+	}
+	return nil
+}
+
+// isPVCDelete return true if the PVC is deleted before timeout.
+// Otherwise, return false.
+func isPVCDelete(ctx context.Context, client client.Client,
+			volumeName string, namespace string) bool {
+	log := logger.GetLogger(ctx)
+
+	for i := 1; i <= 10; i++ {
+		log.Infof("Waiting %d minutes for pvc %v in namespace %s to be deleted",
+			i, volumeName, namespace)
+		// Get PVC by volumeName from namespace.
+		pvc := &v1.PersistentVolumeClaim{}
+		err := client.Get(ctx, k8stypes.NamespacedName{Name: volumeName,
+				Namespace: namespace}, pvc)
+		if err != nil {
+			// TODO: check err with Error: PersistentVolumeClaim \"test-pvc\" not found
+			log.Infof("isPVCDelete query pvc %s, Error: %+v", volumeName, err)
+			return true
+		}
+		time.Sleep(time.Duration(1 * time.Minute))
+	}
+	log.Infof("isPVCDelete pvc %s timeout", volumeName)
+	return false
 }
 
 func registerVolume(
@@ -466,57 +505,6 @@ func registerVolume(
 	err = cnsOperatorClient.Create(ctx, cnsRegisterVolume)
 
 	return err
-
-}
-
-func relocateVolume(ctx context.Context, volumeManager volumes.Manager,
-		vcenter *cnsvsphere.VirtualCenter, volumeID string, datastoreUrl string) (error) {
-	log := logger.GetLogger(ctx)
-
-	// Get datastore object list.
-	dsInfoObjList, err := getDatastoreInfoObjList(ctx, vcenter, datastoreUrl)
-	if err != nil {
-		log.Infof("failed to retrieve datastore object using datastore "+
-				"URL %q. Error: %+v", datastoreUrl, err)
-		return err
-	}
-
-	relocateSpec := cnstypes.NewCnsBlockVolumeRelocateSpec(volumeID, dsInfoObjList[0].Reference())
-
-	resp, err := volumeManager.RelocateVolumeEx(ctx, relocateSpec)
-	log.Infof("Return from CNS Relocate API, taskinfo: %v, Error: %v", resp, err)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// Helper function to get DatastoreInfo object for given datastoreURL in the given
-// virtual center.
-func getDatastoreInfoObjList(ctx context.Context, vc *cnsvsphere.VirtualCenter,
-	datastoreURL string) ([]*cnsvsphere.DatastoreInfo, error) {
-	log := logger.GetLogger(ctx)
-	var datastoreInfos []*cnsvsphere.DatastoreInfo
-	datacenters, err := vc.ListDatacenters(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var datastoreInfoObj *cnsvsphere.DatastoreInfo
-	for _, datacenter := range datacenters {
-		datastoreInfoObj, err = datacenter.GetDatastoreInfoByURL(ctx, datastoreURL)
-		if err != nil {
-			log.Warnf("failed to find datastore with URL %q in datacenter %q from VC %q. Error: %+v",
-				datastoreURL, datacenter.InventoryPath, vc.Config.Host, err)
-		} else {
-			datastoreInfos = append(datastoreInfos, datastoreInfoObj)
-		}
-	}
-	if len(datastoreInfos) > 0 {
-		return datastoreInfos, nil
-	} else {
-		return nil, logger.LogNewErrorf(log,
-			"Unable to find datastore for datastore URL %s in VC %+v", datastoreURL, vc)
-	}
 }
 
 // getVolumeID gets the volume ID from the PV that is bound to PVC by pvcName.
@@ -564,8 +552,8 @@ func isDatastoreAccessible(ctx context.Context, vc *cnsvsphere.VirtualCenter, cl
 			log.Errorf("datastore: %s is not accessible to all nodes in the cluster: %s",
 				datastoreUrl, clusterID)
 			return logger.LogNewErrorf(log,
-									"datastore: %s is not accessible to all nodes in the cluster: %v",
-									datastoreUrl, clusterID)
+				"datastore: %s is not accessible to all nodes in the cluster: %v",
+				datastoreUrl, clusterID)
 		}
 		return nil
 	}

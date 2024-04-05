@@ -683,6 +683,56 @@ func CheckDeregisterVolumeUtil(ctx context.Context, volManager cnsvolume.Manager
 	return false, nil
 }
 
+// UpdateMetadataDeregisterVolumeUtil is the helper function to update metadata
+// which will be used by deregister CNS volume for given volumeId.
+func UpdateMetadataDeregisterVolumeUtil(ctx context.Context,
+			volManager cnsvolume.Manager, volumeID string) error {
+	log := logger.GetLogger(ctx)
+
+	queryFilter := cnstypes.CnsQueryFilter{
+					VolumeIds: []cnstypes.CnsVolumeId{{Id: volumeID}},
+	}
+	// Select volume type, volume name and metadata.
+	querySelection := cnstypes.CnsQuerySelection{
+		Names: []string{
+			"VOLUME_METADATA",
+		},
+	}
+	queryAllResult, err := volManager.QueryVolumeAsync(ctx, queryFilter, &querySelection)
+	if err != nil {
+		log.Errorf("PVC Deregister: QueryVolume failed for volume %q with err=%+v", volumeID, err.Error())
+		// If volume is not found from cns, then it is deregistered.
+		return nil
+	}
+	log.Infof("PVC Deregister: QueryVolume for volume %s result: %+v",
+			volumeID, spew.Sdump(queryAllResult))
+
+	if len(queryAllResult.Volumes) != 1 {
+		return logger.LogNewErrorf(log,
+			"PVC Deregister: QueryVolume failed for volume %s get result %s", volumeID, len(queryAllResult.Volumes))
+	}
+
+	volume := queryAllResult.Volumes[0]
+	volume.Metadata.ContainerCluster.ClusterId = SupervisorClusterIDForDeRegister
+	updateSpec := cnstypes.CnsVolumeMetadataUpdateSpec{
+				VolumeId: cnstypes.CnsVolumeId{
+        						Id: volumeID,
+				},
+				Metadata: cnstypes.CnsVolumeMetadata{
+								ContainerCluster:      volume.Metadata.ContainerCluster,
+				},
+	}
+	log.Infof("PVC deregister: UpdateVolumeMetadata for volume %s with updateSpec: %+v",
+				volumeID, updateSpec)
+	if err := volManager.UpdateVolumeMetadata(ctx, &updateSpec); err != nil {
+		log.Warnf("PVC deregister: UpdateVolumeMetadata failed while replacing clusterID "+
+					"to be deregistered. Error: %+v", err)
+		return err
+	}
+
+	return nil
+}
+
 // ExpandVolumeUtil is the helper function to extend CNS volume for given
 // volumeId.
 func ExpandVolumeUtil(ctx context.Context, vCenterManager vsphere.VirtualCenterManager,
